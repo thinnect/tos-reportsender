@@ -21,6 +21,7 @@ generic module ReportSenderP(uint8_t g_channel_count) {
 		interface Pool<message_t> as MessagePool;
 		interface Queue<message_t*> as MessageQueue;
 		interface LocalTime<TSecond> as LocalTimeSecond;
+		interface RealTimeClock;
 	}
 }
 implementation {
@@ -92,8 +93,13 @@ implementation {
 						m_retry_period_s = 0;
 						m_active = TRUE;
 					}
+					else if(err == EBUSY)
+					{
+						post nextReport();
+					}
 					else
 					{
+						m_channels[m_current].current++; // Skip this log item
 						post nextReport();
 					}
 					return;
@@ -244,12 +250,13 @@ implementation {
 			uint16_t rlen = sizeof(m_report_buffer) - sizeof(m_report_buffer.data) + length;
 			if(rlen <= sizeof(m_report_buffer))
 			{
+				time64_t now = call RealTimeClock.time();
 				uint8_t i;
 				uint8_t fragments = data_fragments(rlen, call AMSend.maxPayloadLength() - sizeof(report_message_t));
 				m_report_buffer.channel = call GetReport.channel[reporter]();
 				m_report_buffer.id = id;
 				m_report_buffer.ts_local = call LocalTimeSecond.get();
-				m_report_buffer.ts_clock = 0; // TODO get time from RTC
+				m_report_buffer.ts_clock = yxktime(&now);
 				memcpy(m_report_buffer.data, data, length);
 				m_report_length = rlen;
 
@@ -349,6 +356,8 @@ implementation {
 		else warn1("len %u", len);
 		return msg;
 	}
+
+	async event void RealTimeClock.changed(time64_t old, time64_t current) { }
 
 	default command uint8_t GetReport.channel[uint8_t reporter]()
 	{

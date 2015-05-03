@@ -17,6 +17,9 @@ implementation {
 	components LocalTimeSecondC;
 	ReportSenderP.LocalTimeSecond -> LocalTimeSecondC;
 
+	components RealTimeClockC;
+	ReportSenderP.RealTimeClock -> RealTimeClockC;
+
 	components new TimerMilliC();
 	ReportSenderP.Timer -> TimerMilliC;
 
