@@ -20,7 +20,8 @@ generic module ReportSenderP(uint8_t g_channel_count) {
 		interface Timer<TMilli>;
 		interface Pool<message_t> as MessagePool;
 		interface Queue<message_t*> as MessageQueue;
-		interface LocalTime<TSecond> as LocalTimeSecond;
+
+		interface LocalTime<TMilli> as LocalTimeMilli;
 		interface RealTimeClock;
 	}
 }
@@ -48,8 +49,8 @@ implementation {
 	typedef nx_struct report_struct_t {
 		nx_uint8_t channel;
 		nx_uint32_t id;
-		nx_uint32_t ts_local;
-		nx_uint32_t ts_clock;
+		nx_uint32_t ts_local_ms; // Local clock timestamp in milliseconds
+		nx_uint32_t ts_clock_s; // RTC timestamp
 		nx_uint8_t  data[255-13]; // This is limited by fragmenter/assembler currently
 	} report_struct_t;
 
@@ -74,7 +75,7 @@ implementation {
 			debug1("init");
 			m_retry_period_s = 0;
 			m_active = TRUE;
-			signal GetReport.report[g_channel_count](SUCCESS, 0, NULL, 0);
+			signal GetReport.report[g_channel_count](SUCCESS, 0, 0, NULL, 0);
 			return;
 		}
 		else
@@ -159,7 +160,6 @@ implementation {
 	}
 #endif
 
-
 	task void sendReport()
 	{
 		if(m_active)
@@ -242,21 +242,21 @@ implementation {
 		}
 	}
 
-	event void GetReport.report[uint8_t reporter](error_t result, uint32_t id, uint8_t data[], uint8_t length)
+	event void GetReport.report[uint8_t reporter](error_t result, uint32_t id, uint32_t timestampmilli, uint8_t data[], uint8_t length)
 	{
-		debug1("rprt[%u](%u, %"PRIu32",_,%u)", reporter, result, id, length);
+		logger(result == SUCCESS ? LOG_DEBUG1: LOG_WARN1, "rprt[%u](%u,%"PRIu32",%"PRIu32",%p,%u)", reporter, result, id, timestampmilli, data, length);
 		if(result == SUCCESS)
 		{
 			uint16_t rlen = sizeof(m_report_buffer) - sizeof(m_report_buffer.data) + length;
 			if(rlen <= sizeof(m_report_buffer))
 			{
-				time64_t now = call RealTimeClock.time();
+				time64_t timestamp = call RealTimeClock.time() - (time64_t)((call LocalTimeMilli.get() - timestampmilli)/SEC_TMILLI(1)); // Calculate the RTC timestamp of the report = now - age_ms/ms
 				uint8_t i;
 				uint8_t fragments = data_fragments(rlen, call AMSend.maxPayloadLength() - sizeof(report_message_t));
 				m_report_buffer.channel = call GetReport.channel[reporter]();
 				m_report_buffer.id = id;
-				m_report_buffer.ts_local = call LocalTimeSecond.get();
-				m_report_buffer.ts_clock = yxktime(&now);
+				m_report_buffer.ts_local_ms = timestampmilli;
+				m_report_buffer.ts_clock_s = yxktime(&timestamp);
 				memcpy(m_report_buffer.data, data, length);
 				m_report_length = rlen;
 

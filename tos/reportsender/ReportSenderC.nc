@@ -14,8 +14,8 @@ implementation {
 	ReportSenderP.Boot -> MainC;
 	MainC.SoftwareInit -> ReportSenderP.Init;
 
-	components LocalTimeSecondC;
-	ReportSenderP.LocalTimeSecond -> LocalTimeSecondC;
+	components LocalTimeMilliC;
+	ReportSenderP.LocalTimeMilli -> LocalTimeMilliC;
 
 	components RealTimeClockC;
 	ReportSenderP.RealTimeClock -> RealTimeClockC;
