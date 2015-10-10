@@ -1,4 +1,7 @@
 /**
+ * Diagnostic report sender. Attempts to reliably deliver all reports.
+ * The reportsender is reset at boot.
+ *
  * @author Raido Pahtma
  * @license MIT
 */
@@ -37,6 +40,7 @@ implementation {
 	} report_sender_t;
 
 	bool m_active = FALSE;
+	bool m_next = FALSE;
 
 	uint32_t m_report = 0;
 
@@ -68,8 +72,12 @@ implementation {
 		return SUCCESS;
 	}
 
-	task void nextReport()
+	/**
+	 * Send the next report. The first report is always a RESET report with ID 0.
+	 */
+	void nextReport()
 	{
+		m_next = FALSE;
 		if(m_report == 0)
 		{
 			debug1("init");
@@ -93,16 +101,15 @@ implementation {
 					{
 						m_retry_period_s = 0;
 						m_active = TRUE;
+						return;
 					}
-					else if(err == EBUSY)
-					{
-						post nextReport();
-					}
-					else
+
+					if(err != EBUSY) // With EBUSY just try the same one again
 					{
 						m_channels[m_current].current++; // Skip this log item
-						post nextReport();
 					}
+					m_next = TRUE;
+					call Timer.startOneShot(REPORTSENDER_DELAY_MS);
 					return;
 				}
 			}
@@ -113,7 +120,8 @@ implementation {
 	event void Boot.booted()
 	{
 		debug1("c%u", g_channel_count);
-		post nextReport();
+		m_next = TRUE;
+		call Timer.startOneShot(0);
 	}
 
 	task void sendTask()
@@ -153,14 +161,14 @@ implementation {
 				if(m_active)
 				{
 					m_retry_period_s = 0;
-					call Timer.startOneShot(REPORTSENDER_RETRY_PERIOD_MIN_S * 1024UL);
+					call Timer.startOneShot(SEC_TMILLI(REPORTSENDER_RETRY_PERIOD_MIN_S));
 				}
 			}
 		}
 	}
 #endif
 
-	task void sendReport()
+	void sendReport()
 	{
 		if(m_active)
 		{
@@ -219,7 +227,7 @@ implementation {
 				}
 
 				debug1("n %us", m_retry_period_s);
-				call Timer.startOneShot(m_retry_period_s * 1024UL); // run retry
+				call Timer.startOneShot(SEC_TMILLI(m_retry_period_s)); // run retry
 
 				post sendTask();
 			}
@@ -232,13 +240,17 @@ implementation {
 
 	event void Timer.fired()
 	{
-		if(call MessageQueue.empty())
+		if(m_next)
 		{
-			post sendReport();
+			nextReport();
+		}
+		else if(call MessageQueue.empty())
+		{
+			sendReport();
 		}
 		else
 		{
-			call Timer.startOneShot(REPORTSENDER_RETRY_PERIOD_MIN_S * 1024UL); // Still sending old fragments, retry later
+			call Timer.startOneShot(SEC_TMILLI(REPORTSENDER_RETRY_PERIOD_MIN_S)); // Still sending old fragments, retry later
 		}
 	}
 
@@ -250,7 +262,7 @@ implementation {
 			uint16_t rlen = sizeof(m_report_buffer) - sizeof(m_report_buffer.data) + length;
 			if(rlen <= sizeof(m_report_buffer))
 			{
-				time64_t timestamp = call RealTimeClock.time() - (time64_t)((call LocalTimeMilli.get() - timestampmilli)/SEC_TMILLI(1)); // Calculate the RTC timestamp of the report = now - age_ms/ms
+				time64_t timestamp = call RealTimeClock.time() - (time64_t)((call LocalTimeMilli.get() - timestampmilli)/SEC_TMILLI(1)); // Calculate the RTC timestamp of the report = now - age_ms/ms_per_sec
 				uint8_t i;
 				uint8_t fragments = data_fragments(rlen, call AMSend.maxPayloadLength() - sizeof(report_message_t));
 				m_report_buffer.channel = call GetReport.channel[reporter]();
@@ -285,7 +297,8 @@ implementation {
 		}
 		m_active = FALSE;
 
-		post nextReport();
+		m_next = TRUE;
+		call Timer.startOneShot(0);
 	}
 
 	event void GetReport.newReport[uint8_t reporter](uint32_t id)
@@ -296,7 +309,8 @@ implementation {
 			m_channels[reporter].latest = id; // remember ID
 			if(m_active == FALSE)
 			{
-				post nextReport();
+				m_next = TRUE;
+				call Timer.startOneShot(0);
 			}
 		}
 	}
@@ -345,8 +359,8 @@ implementation {
 						m_report++;
 
 						m_active = FALSE;
-						call Timer.stop();
-						post nextReport();
+						m_next = TRUE;
+						call Timer.startOneShot(0);
 					}
 				}
 				else warn1("rprt %"PRIu32"!=%"PRIu32, rma->report, m_report);

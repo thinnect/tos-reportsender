@@ -5,6 +5,8 @@
 #ifndef REPORTSENDER_H_
 #define REPORTSENDER_H_
 
+#include "sec_tmilli.h"
+
 enum {
 	REPORTSENDER_REPORT = 1,
 	REPORTSENDER_REPORT_ACK = 2,
@@ -24,8 +26,12 @@ typedef nx_struct report_message_ack_t {
 //	nx_uint8_t missing[]; // Can't use, encountered nesC bug
 } report_message_ack_t;
 
+#ifndef REPORTSENDER_DELAY_MS
+#define REPORTSENDER_DELAY_MS 100UL
+#endif // REPORTSENDER_DELAY_MS
+
 #ifndef REPORTSENDER_INTERVAL_MS
-#define REPORTSENDER_INTERVAL_MS 3*1024UL
+#define REPORTSENDER_INTERVAL_MS SEC_TMILLI(3UL)
 #endif // REPORTSENDER_INTERVAL_MS
 
 #ifndef REPORTSENDER_MAX_FRAGMENTS
