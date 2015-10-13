@@ -240,6 +240,7 @@ implementation {
 
 	event void Timer.fired()
 	{
+		debug1("tmr %"PRIu32, call Timer.getNow());
 		if(m_next)
 		{
 			nextReport();
