@@ -263,13 +263,23 @@ implementation {
 			uint16_t rlen = sizeof(m_report_buffer) - sizeof(m_report_buffer.data) + length;
 			if(rlen <= sizeof(m_report_buffer))
 			{
-				time64_t timestamp = call RealTimeClock.time() - (time64_t)((call LocalTimeMilli.get() - timestampmilli)/SEC_TMILLI(1)); // Calculate the RTC timestamp of the report = now - age_ms/ms_per_sec
+				time64_t rtcnow = call RealTimeClock.time();
+				time64_t timestamp = (time64_t)(-1);
 				uint8_t i;
 				uint8_t fragments = data_fragments(rlen, call AMSend.maxPayloadLength() - sizeof(report_message_t));
+
 				m_report_buffer.channel = call GetReport.channel[reporter]();
 				m_report_buffer.id = id;
 				m_report_buffer.ts_local_ms = timestampmilli;
+
+				if(rtcnow != (time64_t)(-1))
+				{
+					timestamp = rtcnow - (time64_t)((call LocalTimeMilli.get() - timestampmilli)/SEC_TMILLI(1)); // Calculate the RTC timestamp of the report = now - age_ms/ms_per_sec
+				}
+				else warn1("rtc -1");
+
 				m_report_buffer.ts_clock_s = yxktime(&timestamp);
+
 				memcpy(m_report_buffer.data, data, length);
 				m_report_length = rlen;
 
