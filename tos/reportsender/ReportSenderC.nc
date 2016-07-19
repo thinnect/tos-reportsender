@@ -25,6 +25,7 @@ implementation {
 
 	components new AMSenderC(9);
 	ReportSenderP.AMSend -> AMSenderC;
+	ReportSenderP.AMPacket -> AMSenderC;
 	ReportSenderP.Packet -> AMSenderC;
 
 	components new AMReceiverC(9);

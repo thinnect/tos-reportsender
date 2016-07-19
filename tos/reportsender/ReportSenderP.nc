@@ -17,6 +17,7 @@ generic module ReportSenderP(uint8_t g_channel_count) {
 		interface ST_RoutingResult;
 		#endif
 		interface AMSend;
+		interface AMPacket;
 		interface Packet;
 		interface Receive;
 		interface GetReport[uint8_t channel_index];
@@ -40,7 +41,7 @@ implementation {
 	} report_sender_t;
 
 	bool m_active = FALSE;
-	bool m_next = FALSE;
+	bool m_next = TRUE;
 
 	uint32_t m_report = 0;
 
@@ -49,6 +50,8 @@ implementation {
 	uint8_t m_missing[REPORTSENDER_MAX_FRAGMENTS];
 
 	uint16_t m_retry_period_s = 0;
+
+	am_addr_t m_destination = AM_BROADCAST_ADDR; // Initial destination is broadcast, ack to reset message will get a unicast address here
 
 	typedef nx_struct report_struct_t {
 		nx_uint8_t channel;
@@ -60,6 +63,8 @@ implementation {
 
 	report_struct_t m_report_buffer;
 	uint8_t m_report_length = 0;
+
+	task void reportingTask();
 
 	command error_t Init.init()
 	{
@@ -77,51 +82,57 @@ implementation {
 	 */
 	void nextReport()
 	{
-		m_next = FALSE;
-		if(m_report == 0)
+		time64_t rtcnow = call RealTimeClock.time();
+		if(rtcnow != (time64_t)(-1))
 		{
-			debug1("init");
-			m_retry_period_s = 0;
-			m_active = TRUE;
-			signal GetReport.report[g_channel_count](SUCCESS, 0, 0, NULL, 0);
-			return;
-		}
-		else
-		{
-			uint8_t i;
-			for(i=0;i<g_channel_count;i++)
+			m_next = FALSE;
+			if(m_report == 0)
 			{
-				m_current = (m_current + 1) % g_channel_count; // If idle, it actually starts from second slot and will get to the first slot last
-				debug1("rprtr %u (%"PRIu32"/%"PRIu32")", m_current, m_channels[m_current].current, m_channels[m_current].latest);
-				if(m_channels[m_current].current <= m_channels[m_current].latest)
+				debug1("init");
+				m_retry_period_s = 0;
+				m_active = TRUE;
+				signal GetReport.report[g_channel_count](SUCCESS, 0, 0, NULL, 0);
+				return;
+			}
+			else
+			{
+				uint8_t i;
+				for(i=0;i<g_channel_count;i++)
 				{
-					error_t err = call GetReport.get[m_current](m_channels[m_current].current);
-					logger(err == SUCCESS ? LOG_DEBUG1 : LOG_ERR1, "get[%u](%"PRIu32")=%u", m_current, m_channels[m_current].current, err);
-					if(err == SUCCESS)
+					m_current = (m_current + 1) % g_channel_count; // If idle, it actually starts from second slot and will get to the first slot last
+					debug1("rprtr %u (%"PRIu32"/%"PRIu32")", m_current, m_channels[m_current].current, m_channels[m_current].latest);
+					if(m_channels[m_current].current <= m_channels[m_current].latest)
 					{
-						m_retry_period_s = 0;
-						m_active = TRUE;
+						error_t err = call GetReport.get[m_current](m_channels[m_current].current);
+						logger(err == SUCCESS ? LOG_DEBUG1 : LOG_ERR1, "get[%u](%"PRIu32")=%u", m_current, m_channels[m_current].current, err);
+						if(err == SUCCESS)
+						{
+							m_retry_period_s = 0;
+							m_active = TRUE;
+							return;
+						}
+
+						if(err != EBUSY) // With EBUSY just try the same one again
+						{
+							m_channels[m_current].current++; // Skip this log item
+						}
+						m_next = TRUE;
+						call Timer.startOneShot(REPORTSENDER_DELAY_MS);
 						return;
 					}
-
-					if(err != EBUSY) // With EBUSY just try the same one again
-					{
-						m_channels[m_current].current++; // Skip this log item
-					}
-					m_next = TRUE;
-					call Timer.startOneShot(REPORTSENDER_DELAY_MS);
-					return;
 				}
+				debug1("none");
 			}
 		}
-		debug1("none");
+		else {
+			debug1("wait rtc");
+		}
 	}
 
 	event void Boot.booted()
 	{
 		debug1("c%u", g_channel_count);
-		m_next = TRUE;
-		call Timer.startOneShot(0);
+		post reportingTask();
 	}
 
 	task void sendTask()
@@ -129,11 +140,10 @@ implementation {
 		if(call MessageQueue.size() > 0)
 		{
 			message_t* msg = call MessageQueue.dequeue();
-			am_addr_t destination = AM_SERVER_ADDRESS;
 			uint8_t length = call Packet.payloadLength(msg);
-			error_t err = call AMSend.send(destination, msg, length);
+			error_t err = call AMSend.send(m_destination, msg, length);
 
-			logger(err == SUCCESS ? LOG_DEBUG1 : LOG_ERR1, "snd(%04X,%p,%u)=%u (p%uq%u)", destination, msg, length, err, call MessagePool.size(), call MessageQueue.size());
+			logger(err == SUCCESS ? LOG_DEBUG1 : LOG_ERR1, "snd(%04X,%p,%u)=%u (p%uq%u)", m_destination, msg, length, err, call MessagePool.size(), call MessageQueue.size());
 			if(err != SUCCESS)
 			{
 				call MessagePool.put(msg);
@@ -153,7 +163,7 @@ implementation {
 #ifdef STACK_BEAT
 	event void ST_RoutingResult.routed(am_addr_t destination, error_t result)
 	{
-		if(destination == AM_SERVER_ADDRESS)
+		if(destination == m_destination)
 		{
 			logger(result == SUCCESS ? LOG_DEBUG1: LOG_WARN1, "routed %04X %u", destination, result);
 			if(result == SUCCESS)
@@ -238,9 +248,9 @@ implementation {
 		}
 	}
 
-	event void Timer.fired()
+	task void reportingTask()
 	{
-		debug1("tmr %"PRIu32, call Timer.getNow());
+		debug1("rprtng");
 		if(m_next)
 		{
 			nextReport();
@@ -255,6 +265,12 @@ implementation {
 		}
 	}
 
+	event void Timer.fired()
+	{
+		debug1("tmr %"PRIu32, call Timer.getNow());
+		post reportingTask();
+	}
+
 	event void GetReport.report[uint8_t reporter](error_t result, uint32_t id, uint32_t timestampmilli, uint8_t data[], uint8_t length)
 	{
 		logger(result == SUCCESS ? LOG_DEBUG1: LOG_WARN1, "rprt[%u](%u,%"PRIu32",%"PRIu32",%p,%u)", reporter, result, id, timestampmilli, data, length);
@@ -264,7 +280,6 @@ implementation {
 			if(rlen <= sizeof(m_report_buffer))
 			{
 				time64_t rtcnow = call RealTimeClock.time();
-				time64_t timestamp = (time64_t)(-1);
 				uint8_t i;
 				uint8_t fragments = data_fragments(rlen, call AMSend.maxPayloadLength() - sizeof(report_message_t));
 
@@ -273,12 +288,15 @@ implementation {
 				m_report_buffer.ts_local_ms = timestampmilli;
 
 				if(rtcnow != (time64_t)(-1))
-				{
-					timestamp = rtcnow - (time64_t)((call LocalTimeMilli.get() - timestampmilli)/SEC_TMILLI(1)); // Calculate the RTC timestamp of the report = now - age_ms/ms_per_sec
+				{   // Calculate the RTC timestamp of the report = now - age_ms/ms_per_sec
+					time64_t timestamp = rtcnow - (time64_t)((call LocalTimeMilli.get() - timestampmilli)/SEC_TMILLI(1));
+					m_report_buffer.ts_clock_s = yxktime(&timestamp);
 				}
-				else warn1("rtc -1");
-
-				m_report_buffer.ts_clock_s = yxktime(&timestamp);
+				else
+				{   // This should not happen unless someone explicitly sets the clock to -1
+					warn1("rtc -1");
+					m_report_buffer.ts_clock_s = 0;
+				}
 
 				memcpy(m_report_buffer.data, data, length);
 				m_report_length = rlen;
@@ -328,61 +346,72 @@ implementation {
 
 	event message_t* Receive.receive(message_t* msg, void* payload, uint8_t len)
 	{
-		debug1("RCV %u", len);
 		if(len >= sizeof(report_message_ack_t))
 		{
 			report_message_ack_t* rma = (report_message_ack_t*)payload;
-			if(rma->header == REPORTSENDER_REPORT_ACK)
+			switch(rma->header)
 			{
-				if(rma->report == m_report)
-				{
-					uint8_t missing = len - sizeof(report_message_ack_t);
-					if(missing > 0)
+				case REPORTSENDER_REPORT:
+					debug1("rprt %04X->%04X l%u", call AMPacket.source(msg), call AMPacket.destination(msg), len);
+					break;
+				case REPORTSENDER_REPORT_ACK:
+					if(rma->report == m_report)
 					{
-						uint8_t* data = ((uint8_t*)rma) + sizeof(report_message_ack_t);
-						if(missing < REPORTSENDER_MAX_FRAGMENTS)
+						uint8_t missing = len - sizeof(report_message_ack_t);
+						if(missing > 0)
 						{
-							memcpy(m_missing, data, missing);
-							memset(m_missing + missing, 0xFF, REPORTSENDER_MAX_FRAGMENTS - missing);
+							uint8_t* data = ((uint8_t*)rma) + sizeof(report_message_ack_t);
+							if(missing < REPORTSENDER_MAX_FRAGMENTS)
+							{
+								memcpy(m_missing, data, missing);
+								memset(m_missing + missing, 0xFF, REPORTSENDER_MAX_FRAGMENTS - missing);
+							}
+							else
+							{
+								memcpy(m_missing, data, REPORTSENDER_MAX_FRAGMENTS);
+							}
+							debugb2("miss %u", m_missing, REPORTSENDER_MAX_FRAGMENTS, missing);
+
+							while(call MessageQueue.size() > 0)
+							{
+								debug2("clear");
+								call MessagePool.put(call MessageQueue.dequeue()); // Throw away old stuff in the queue
+							}
+
+							m_retry_period_s = 0; // Contact possible, reset retry timeout and speed things up
+
+							call Timer.startOneShot(REPORTSENDER_INTERVAL_MS); // Retrieve data and send
 						}
 						else
 						{
-							memcpy(m_missing, data, REPORTSENDER_MAX_FRAGMENTS);
+							if(m_current < g_channel_count)
+							{
+								m_channels[m_current].current++;
+							}
+							m_report++;
+
+							m_active = FALSE;
+							m_next = TRUE;
+							call Timer.startOneShot(0);
 						}
-						debugb1("miss %u", m_missing, REPORTSENDER_MAX_FRAGMENTS, missing);
-
-						while(call MessageQueue.size() > 0)
-						{
-							debug1("clear");
-							call MessagePool.put(call MessageQueue.dequeue()); // Throw away old stuff in the queue
-						}
-
-						m_retry_period_s = 0; // Contact possible, reset retry timeout and speed things up
-
-						call Timer.startOneShot(REPORTSENDER_INTERVAL_MS); // Retrieve data and send
+						debug1("ack %04X r%"PRIu32" m%u", call AMPacket.source(msg), rma->report, missing);
+						m_destination = call AMPacket.source(msg); // Initially broadcast, but assume one interested party in the whole world and send everything to them
 					}
-					else
-					{
-						if(m_current < g_channel_count)
-						{
-							m_channels[m_current].current++;
-						}
-						m_report++;
-
-						m_active = FALSE;
-						m_next = TRUE;
-						call Timer.startOneShot(0);
-					}
-				}
-				else warn1("rprt %"PRIu32"!=%"PRIu32, rma->report, m_report);
+					else warn1("rprt %"PRIu32"!=%"PRIu32, rma->report, m_report);
+					break;
+				default:
+					warnb1("hdr %u", payload, len, rma->header);
+					break;
 			}
-			else warn1("hdr %u", rma->header);
 		}
 		else warn1("len %u", len);
 		return msg;
 	}
 
-	async event void RealTimeClock.changed(time64_t old, time64_t current) { }
+	async event void RealTimeClock.changed(time64_t old, time64_t current)
+	{
+		post reportingTask();
+	}
 
 	default command uint8_t GetReport.channel[uint8_t reporter]()
 	{
