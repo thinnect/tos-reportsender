@@ -161,7 +161,7 @@ implementation {
 
 
 #ifdef STACK_BEAT
-	event void ST_RoutingResult.routed(am_addr_t destination, error_t result)
+	event void ST_RoutingResult.routed(am_addr_t destination, route_cost_t dist, error_t result)
 	{
 		if(destination == m_destination)
 		{
